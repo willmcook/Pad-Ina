@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Pad-ina</title>
+  <style>
+    :root {
+      --adina-green: #00c28b;
+      --adina-green-soft: #0a6046;
+      --bg-dark: #050609;
+    }
+
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top, #10151f 0, #050609 55%, #020308 100%);
+      color: #ffffff;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+
+    #gameContainer {
+      box-shadow: 0 0 50px rgba(0, 0, 0, 0.7);
+      border-radius: 20px;
+      overflow: hidden;
+      border: 1px solid rgba(0, 194, 139, 0.35);
+      position: relative;
+    }
+
+    canvas {
+      display: block;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(0, 194, 139, 0.25) 0, transparent 40%),
+        radial-gradient(circle at 80% 100%, rgba(0, 194, 139, 0.2) 0, transparent 45%),
+        radial-gradient(circle at center, #1f2734 0, #050609 65%);
+    }
+
+    #hud {
+      margin-top: 10px;
+      text-align: center;
+      font-size: 14px;
+      opacity: 0.95;
+    }
+
+    #brand {
+      font-size: 13px;
+      margin-top: 3px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    #brand span {
+      color: var(--adina-green);
+      font-weight: 600;
+    }
+
+    #difficulty {
+      margin-top: 6px;
+      font-size: 13px;
+      opacity: 0.95;
+    }
+
+    .highlight {
+      color: var(--adina-green);
+      font-weight: 600;
+    }
+
+    #titleBar {
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 20px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.9);
+      text-shadow: 0 0 8px rgba(0, 0, 0, 0.8);
+      pointer-events: none;
+    }
+
+    #titleBar span {
+      color: var(--adina-green);
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <div id="gameContainer">
+    <div id="titleBar"><span>Pad</span>-ina</div>
+    <canvas id="game" width="800" height="480"></canvas>
+  </div>
+
+  <div id="hud">
+    Player (Right): <b>↑ / ↓</b> &nbsp;|&nbsp; Computer (Left)
+    <div id="difficulty">
+      Difficulty: <span id="difficultyLabel" class="highlight">Medium</span>
+      &nbsp;|&nbsp; Press <b>1</b> = Easy, <b>2</b> = Medium, <b>3</b> = Hard
+      &nbsp;|&nbsp; <b>R</b> = Reset score &nbsp;|&nbsp; <b>Space</b> = Start
+    </div>
+    <div id="brand">
+      Powered by <span>Adina Workspace</span>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const CW = canvas.width;
+    const CH = canvas.height;
+
+    const difficultyLabel = document.getElementById("difficultyLabel");
+
+    // Game state
+    let gameState = "start"; // "start" | "playing"
+
+    // Paddles
+    const paddleWidth = 12;
+    const paddleHeight = 90;
+    const paddleMargin = 30;
+    const playerSpeed = 7;
+
+    // Left = AI, Right = human
+    let leftPaddleY = (CH - paddleHeight) / 2;
+    let rightPaddleY = (CH - paddleHeight) / 2;
+
+    let rightUp = false;
+    let rightDown = false;
+
+    // Leaf "ball" with preserved aspect ratio
+    let leafWidth = 40;
+    let leafHeight = 40;
+    let leafX = CW / 2;
+    let leafY = CH / 2;
+    let leafVX = 5; // start moving towards player (right)
+    let leafVY = 3;
+
+    const leafImg = new Image();
+    let leafLoaded = false;
+    leafImg.onload = () => {
+      leafLoaded = true;
+      const aspect = leafImg.width / leafImg.height;
+      leafHeight = 40;                 // base height
+      leafWidth = leafHeight * aspect; // keep aspect ratio
+    };
+    leafImg.src = "https://i.postimg.cc/TwTpzqVz/Leaf-White-on-Transparent.png";
+
+    // Scores
+    let leftScore = 0;
+    let rightScore = 0;
+
+    // Difficulty / AI settings
+    let difficulty = "medium";
+    const difficultySettings = {
+      easy:   { aiSpeed: 4, reaction: 0.04, error: 80 },
+      medium: { aiSpeed: 6, reaction: 0.07, error: 40 },
+      hard:   { aiSpeed: 8, reaction: 0.12, error: 15 },
+    };
+
+    function setDifficulty(level) {
+      if (!difficultySettings[level]) return;
+      difficulty = level;
+      difficultyLabel.textContent = level[0].toUpperCase() + level.slice(1);
+    }
+
+    function resetLeaf(direction = 1) {
+      // direction: 1 = to the right (towards player), -1 = to the left (towards AI)
+      leafX = CW / 2;
+      leafY = CH / 2;
+      leafVX = 5 * direction;
+      leafVY = (Math.random() * 4 - 2) || 2; // avoid perfectly horizontal
+    }
+
+    function resetScores() {
+      leftScore = 0;
+      rightScore = 0;
+      resetLeaf(1);
+    }
+
+    function drawNet() {
+      const segmentHeight = 10;
+      const gap = 10;
+      ctx.save();
+      ctx.globalAlpha = 0.4;
+      ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+      for (let y = 0; y < CH; y += segmentHeight + gap) {
+        ctx.fillRect(CW / 2 - 1, y, 2, segmentHeight);
+      }
+      ctx.restore();
+    }
+
+    function drawPaddle(x, y, isAI) {
+      ctx.fillStyle = isAI ? "#00c28b" : "#ffffff";
+      ctx.shadowColor = isAI ? "rgba(0,194,139,0.7)" : "rgba(255,255,255,0.4)";
+      ctx.shadowBlur = 10;
+      ctx.fillRect(x, y, paddleWidth, paddleHeight);
+      ctx.shadowBlur = 0;
+    }
+
+    function drawScores() {
+      ctx.save();
+      ctx.font = "32px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      // Left (AI) score under title, a bit left
+      ctx.fillStyle = "#00c28b";
+      ctx.fillText(leftScore, CW / 2 - 60, 60);
+      // Right (player) score under title, a bit right
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(rightScore, CW / 2 + 60, 60);
+      ctx.restore();
+    }
+
+    function drawLeaf() {
+      ctx.save();
+      if (leafLoaded) {
+        // subtle glow behind the leaf
+        ctx.globalAlpha = 0.18;
+        ctx.beginPath();
+        ctx.ellipse(leafX, leafY, leafWidth * 0.75, leafHeight * 0.75, 0, 0, Math.PI * 2);
+        ctx.fillStyle = "#00c28b";
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.drawImage(
+          leafImg,
+          leafX - leafWidth / 2,
+          leafY - leafHeight / 2,
+          leafWidth,
+          leafHeight
+        );
+      } else {
+        ctx.beginPath();
+        ctx.arc(leafX, leafY, 20, 0, Math.PI * 2);
+        ctx.fillStyle = "#ffffff";
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawStartScreenOverlay() {
+      ctx.save();
+      ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+      ctx.fillRect(0, 0, CW, CH);
+
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      // Title
+      ctx.font = "40px system-ui, sans-serif";
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText("Pad-ina", CW / 2, CH / 2 - 70);
+
+      // Subline
+      ctx.font = "18px system-ui, sans-serif";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+      ctx.fillText("One player vs. Adina AI", CW / 2, CH / 2 - 30);
+
+      // Instructions
+      ctx.font = "16px system-ui, sans-serif";
+      ctx.fillStyle = "#00c28b";
+      ctx.fillText("Press SPACE to start", CW / 2, CH / 2 + 10);
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+      ctx.font = "15px system-ui, sans-serif";
+      ctx.fillText("Move: ↑ / ↓   •   Difficulty: 1 / 2 / 3   •   Reset: R", CW / 2, CH / 2 + 45);
+
+      ctx.font = "13px system-ui, sans-serif";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+      ctx.fillText("Difficulty starts on Medium", CW / 2, CH / 2 + 75);
+
+      ctx.restore();
+    }
+
+    function clampPaddles() {
+      leftPaddleY = Math.max(0, Math.min(CH - paddleHeight, leftPaddleY));
+      rightPaddleY = Math.max(0, Math.min(CH - paddleHeight, rightPaddleY));
+    }
+
+    function updatePlayer() {
+      if (rightUp) rightPaddleY -= playerSpeed;
+      if (rightDown) rightPaddleY += playerSpeed;
+    }
+
+    function updateAI() {
+      const settings = difficultySettings[difficulty];
+      const aiSpeed = settings.aiSpeed;
+      const reaction = settings.reaction;
+      const error = settings.error;
+
+      const randomOffset = (Math.random() - 0.5) * error;
+      const targetY = leafY + randomOffset;
+      const aiCenter = leftPaddleY + paddleHeight / 2;
+
+      const diff = targetY - aiCenter;
+      const move = diff * reaction;
+      const clampedMove = Math.max(-aiSpeed, Math.min(aiSpeed, move));
+      leftPaddleY += clampedMove;
+    }
+
+    function updateLeaf() {
+      leafX += leafVX;
+      leafY += leafVY;
+
+      const halfW = leafWidth / 2;
+      const halfH = leafHeight / 2;
+
+      // Top/bottom collisions
+      if (leafY - halfH <= 0 || leafY + halfH >= CH) {
+        leafVY *= -1;
+      }
+
+      // Left paddle collision (AI)
+      if (
+        leafX - halfW <= paddleMargin + paddleWidth &&
+        leafX - halfW >= paddleMargin &&
+        leafY >= leftPaddleY &&
+        leafY <= leftPaddleY + paddleHeight
+      ) {
+        leafX = paddleMargin + paddleWidth + halfW; // avoid sticking
+        leafVX *= -1.1; // bounce & speed up slightly
+
+        const hitPos =
+          (leafY - (leftPaddleY + paddleHeight / 2)) / (paddleHeight / 2);
+        leafVY += hitPos * 2;
+      }
+
+      // Right paddle collision (Player)
+      if (
+        leafX + halfW >= CW - paddleMargin - paddleWidth &&
+        leafX + halfW <= CW - paddleMargin &&
+        leafY >= rightPaddleY &&
+        leafY <= rightPaddleY + paddleHeight
+      ) {
+        leafX = CW - paddleMargin - paddleWidth - halfW;
+        leafVX *= -1.1;
+
+        const hitPos =
+          (leafY - (rightPaddleY + paddleHeight / 2)) / (paddleHeight / 2);
+        leafVY += hitPos * 2;
+      }
+
+      // Scoring
+      if (leafX + halfW < 0) {
+        // Went past AI: point to player (right)
+        rightScore++;
+        resetLeaf(-1); // next serve goes towards AI (left)
+      } else if (leafX - halfW > CW) {
+        // Went past player: point to AI (left)
+        leftScore++;
+        resetLeaf(1); // next serve goes towards player (right)
+      }
+    }
+
+    function update() {
+      if (gameState !== "playing") return;
+
+      updatePlayer();
+      updateAI();
+      clampPaddles();
+      updateLeaf();
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, CW, CH);
+
+      drawNet();
+      // Left = AI, Right = player
+      drawPaddle(paddleMargin, leftPaddleY, true);
+      drawPaddle(CW - paddleMargin - paddleWidth, rightPaddleY, false);
+      drawLeaf();
+      drawScores();
+
+      if (gameState === "start") {
+        drawStartScreenOverlay();
+      }
+    }
+
+    function gameLoop() {
+      update();
+      render();
+      requestAnimationFrame(gameLoop);
+    }
+
+    // Input handling
+    window.addEventListener("keydown", (e) => {
+      if (e.code === "ArrowUp") rightUp = true;
+      if (e.code === "ArrowDown") rightDown = true;
+
+      if (e.code === "Digit1") setDifficulty("easy");
+      if (e.code === "Digit2") setDifficulty("medium");
+      if (e.code === "Digit3") setDifficulty("hard");
+
+      if (e.code === "KeyR") resetScores();
+
+      if (e.code === "Space") {
+        if (gameState === "start") {
+          gameState = "playing";
+          resetLeaf(1); // start towards player
+        }
+        e.preventDefault();
+      }
+    });
+
+    window.addEventListener("keyup", (e) => {
+      if (e.code === "ArrowUp") rightUp = false;
+      if (e.code === "ArrowDown") rightDown = false;
+    });
+
+    // Init
+    setDifficulty("medium");
+    resetLeaf(1);
+    requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>
